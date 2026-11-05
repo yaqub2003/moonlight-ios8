@@ -39,6 +39,7 @@
 #include <Limelight.h>
 
 @implementation MainFrameViewController {
+    UICollectionViewFlowLayout* _appGridLayout;
     NSOperationQueue* _opQueue;
     TemporaryHost* _selectedHost;
     BOOL _showHiddenApps;
@@ -77,12 +78,20 @@ static NSMutableSet* hostList;
     }
     layout.sectionInset = UIEdgeInsetsMake(20, 20, 20, 20);
     
-    return [super initWithCollectionViewLayout:layout];
+    self = [super initWithCollectionViewLayout:layout];
+    if (self) {
+        _appGridLayout = layout;
+    }
+    return self;
 }
 
 - (void)loadView {
+    // Use our own reference to the layout: on iOS 8, -[UICollectionViewController
+    // collectionViewLayout] asks the (not yet created) collection view for its
+    // layout and returns nil while the view is being loaded, which makes
+    // UICollectionView throw "must be initialized with a non-nil layout parameter".
     AppCollectionView* collectionView = [[AppCollectionView alloc] initWithFrame:[UIScreen mainScreen].bounds
-                                                            collectionViewLayout:self.collectionViewLayout];
+                                                            collectionViewLayout:_appGridLayout];
     collectionView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     collectionView.backgroundColor = [UIColor colorWithRed:0.333f green:0.333f blue:0.333f alpha:1.0f];
     collectionView.indicatorStyle = UIScrollViewIndicatorStyleBlack;

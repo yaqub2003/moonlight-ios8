@@ -14,6 +14,22 @@
 
 @implementation AppDelegate
 
+// Crash reports on iOS 8 don't include the reason for an uncaught exception,
+// so also write it (and the symbolicated call stack) to Documents/LastCrash.txt.
+// With a jailbreak it's at /var/mobile/Containers/Data/Application/<UUID>/Documents.
+static void WriteUncaughtException(NSException* exception)
+{
+    NSString* report = [NSString stringWithFormat:@"%@\n\n%@: %@\n\n%@\n",
+                        [NSDate date], exception.name, exception.reason,
+                        [exception.callStackSymbols componentsJoinedByString:@"\n"]];
+    NSString* documents = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    [report writeToFile:[documents stringByAppendingPathComponent:@"LastCrash.txt"]
+             atomically:YES
+               encoding:NSUTF8StringEncoding
+                  error:nil];
+    NSLog(@"Uncaught exception: %@", report);
+}
+
 @synthesize managedObjectContext = _managedObjectContext;
 @synthesize managedObjectModel = _managedObjectModel;
 @synthesize persistentStoreCoordinator = _persistentStoreCoordinator;
@@ -27,6 +43,8 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
 #endif
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    NSSetUncaughtExceptionHandler(WriteUncaughtException);
+    
     // The iOS 8 build has no storyboards, so build the view controller
     // hierarchy that iPad.storyboard and iPhone.storyboard used to describe:
     //
