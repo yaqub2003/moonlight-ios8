@@ -229,9 +229,14 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
     OSStatus status;
     AudioStreamBasicDescription format;
     
-    // Do not lower the volume of other audio streams
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
-    [[AVAudioSession sharedInstance] setActive:YES error:nil];
+    // Configure the audio session like Moonlight 2.x did on iOS 8: match the
+    // stream's sample rate and ask for a small I/O buffer to keep latency low.
+    // MixWithOthers keeps other audio from being lowered (upstream behavior).
+    AVAudioSession* audioSession = [AVAudioSession sharedInstance];
+    [audioSession setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+    [audioSession setPreferredSampleRate:opusConfig->sampleRate error:nil];
+    [audioSession setPreferredIOBufferDuration:0.005 error:nil];
+    [audioSession setActive:YES error:nil];
     
     audioConfig = *opusConfig;
     audioFrameSize = opusConfig->samplesPerFrame * sizeof(short) * opusConfig->channelCount;

@@ -306,10 +306,21 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     
     CMSampleTimingInfo sampleTiming = {kCMTimeInvalid, CMTimeMake(du->presentationTimeUs, 1000000), kCMTimeInvalid};
     
+    // Moonlight 2.x (which worked on iOS 8) submitted samples without any timing
+    // information and relied solely on kCMSampleAttachmentKey_DisplayImmediately.
+    // Keep doing that on old iOS versions, since the display layer has no control
+    // timebase and we don't want it to hold frames back based on their PTS.
+    BOOL attachTiming = NO;
+    if (@available(iOS 11.0, *)) {
+        attachTiming = YES;
+    }
+    
     status = CMSampleBufferCreateReady(kCFAllocatorDefault,
                                   frameBlockBuffer,
-                                  formatDesc, 1, 1,
-                                  &sampleTiming, 0, NULL,
+                                  formatDesc, 1,
+                                  attachTiming ? 1 : 0,
+                                  attachTiming ? &sampleTiming : NULL,
+                                  0, NULL,
                                   &sampleBuffer);
     if (status != noErr) {
         Log(LOG_E, @"CMSampleBufferCreate failed: %d", (int)status);
@@ -326,7 +337,14 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         CFDictionarySetValue(dict, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
         CFDictionarySetValue(dict, kCMSampleAttachmentKey_IsDependedOnByOthers, kCFBooleanTrue);
         if (du->frameType != FRAME_TYPE_IDR) {
+            // P-frame
             CFDictionarySetValue(dict, kCMSampleAttachmentKey_NotSync, kCFBooleanTrue);
+            CFDictionarySetValue(dict, kCMSampleAttachmentKey_DependsOnOthers, kCFBooleanTrue);
+        }
+        else {
+            // I-frame
+            CFDictionarySetValue(dict, kCMSampleAttachmentKey_NotSync, kCFBooleanFalse);
+            CFDictionarySetValue(dict, kCMSampleAttachmentKey_DependsOnOthers, kCFBooleanFalse);
         }
     }
 

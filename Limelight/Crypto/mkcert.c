@@ -76,7 +76,13 @@ struct CertKeyPair generateCertKeyPair(void) {
                         x509,
                         NULL,
                         NID_pbe_WithSHA1And3_Key_TripleDES_CBC,
-                        -1, // disable certificate encryption
+                        // Encrypt the certificate bag too. Moonlight 2.x (OpenSSL 1.0
+                        // defaults) always produced an encrypted certificate bag, which is
+                        // what old iOS versions' SecPKCS12Import are known to accept.
+                        // Upstream uses an unencrypted bag to avoid OpenSSL 3's legacy
+                        // provider (needed for the old RC2 default), but 3DES lives in the
+                        // default provider, so use that instead.
+                        NID_pbe_WithSHA1And3_Key_TripleDES_CBC,
                         2048,
                         -1, // disable the automatic MAC
                         0);
