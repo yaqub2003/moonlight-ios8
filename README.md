@@ -1,3 +1,10 @@
+# Moonlight для iOS 8
+
+> **Этот форк** собирает современный Moonlight (с поддержкой Sunshine/Apollo) для **iOS 8+**
+> и 32-битных устройств (iPad 2/3/4, iPad mini 1, iPhone 4S/5/5c).
+> Сборка, установка и список изменений: [ios8/README.md](ios8/README.md).
+> Готовый IPA — в артефактах GitHub Actions (workflow «iOS 8 build»).
+
 # Moonlight iOS/tvOS
 
 [![CI](https://github.com/moonlight-stream/moonlight-ios/actions/workflows/ci.yml/badge.svg)](https://github.com/moonlight-stream/moonlight-ios/actions/workflows/ci.yml)

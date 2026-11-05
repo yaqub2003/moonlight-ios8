@@ -6,9 +6,11 @@
 //  Copyright © 2020 Moonlight Game Streaming Project. All rights reserved.
 //
 
-@import CoreHaptics;
-@import GameController;
+#import <GameController/GameController.h>
 
+// Controller rumble uses GCDeviceHaptics/CoreHaptics, which only exist on
+// iOS 14 and later. The iOS 8 build provides this as a no-op so the rest
+// of the controller code stays unchanged.
 @interface HapticContext : NSObject
 
 -(void)setMotorAmplitude:(unsigned short)amplitude;

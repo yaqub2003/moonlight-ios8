@@ -10,15 +10,14 @@
 #import "TemporarySettings.h"
 #import "DataManager.h"
 
-#import <VideoToolbox/VideoToolbox.h>
-#import <AVFoundation/AVFoundation.h>
+
+#import "SWRevealViewController.h"
 
 @implementation SettingsViewController {
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
+    NSMutableArray* _layoutViews;
 }
-
-@dynamic overrideUserInterfaceStyle;
 
 static NSString* bitrateFormat = @"Bitrate: %.1f Mbps";
 static const int bitrateTable[] = {
@@ -67,49 +66,114 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
     return i - 1;
 }
 
-// This view is rooted at a ScrollView. To make it scrollable,
-// we'll update content size here.
--(void)viewDidLayoutSubviews {
-    CGFloat highestViewY = 0;
-    
-    // Enumerate the scroll view's subviews looking for the
-    // highest view Y value to set our scroll view's content
-    // size.
-    for (UIView* view in self.scrollView.subviews) {
-        // UIScrollViews have 2 default child views
-        // which represent the horizontal and vertical scrolling
-        // indicators. Ignore any views we don't recognize.
-        if (![view isKindOfClass:[UILabel class]] &&
-            ![view isKindOfClass:[UISegmentedControl class]] &&
-            ![view isKindOfClass:[UISlider class]]) {
-            continue;
-        }
-        
-        CGFloat currentViewY = view.frame.origin.y + view.frame.size.height;
-        if (currentViewY > highestViewY) {
-            highestViewY = currentViewY;
-        }
-    }
-    
-    // Add a bit of padding so the view doesn't end right at the button of the display
-    self.scrollView.contentSize = CGSizeMake(self.scrollView.contentSize.width,
-                                             highestViewY + 20);
+// The iOS 8 build has no storyboards (they can't be compiled for iOS 8
+// with a current toolchain), so the settings view is built in code. The
+// layout mirrors the upstream storyboard: a scroll view with a label and
+// a selector for each option, stacked vertically.
+static const CGFloat kSettingsMargin = 16;
+static const CGFloat kSettingsLabelHeight = 21;
+static const CGFloat kSettingsControlHeight = 29;
+static const CGFloat kSettingsSpacing = 8;
+static const CGFloat kSettingsGroupSpacing = 14;
+
+- (UILabel*)newSettingsLabel:(NSString*)text {
+    UILabel* label = [[UILabel alloc] init];
+    label.text = text;
+    label.textColor = [UIColor whiteColor];
+    label.font = [UIFont systemFontOfSize:17];
+    [self.scrollView addSubview:label];
+    [_layoutViews addObject:label];
+    return label;
 }
 
-// Adjust the subviews for the safe area on the iPhone X.
-- (void)viewSafeAreaInsetsDidChange {
-    [super viewSafeAreaInsetsDidChange];
+- (UISegmentedControl*)newSelectorWithTitles:(NSArray*)titles selected:(NSInteger)selected {
+    UISegmentedControl* control = [[UISegmentedControl alloc] initWithItems:titles];
+    control.selectedSegmentIndex = selected;
+    control.tintColor = [UIColor whiteColor];
+    [self.scrollView addSubview:control];
+    [_layoutViews addObject:control];
+    return control;
+}
+
+- (UISegmentedControl*)newSettingWithTitle:(NSString*)title segments:(NSArray*)segments selected:(NSInteger)selected {
+    [self newSettingsLabel:title];
+    return [self newSelectorWithTitles:segments selected:selected];
+}
+
+- (void)loadView {
+    _layoutViews = [[NSMutableArray alloc] init];
     
-    if (@available(iOS 11.0, *)) {
-        for (UIView* view in self.view.subviews) {
-            // HACK: The official safe area is much too large for our purposes
-            // so we'll just use the presence of any safe area to indicate we should
-            // pad by 20.
-            if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-                view.frame = CGRectMake(view.frame.origin.x + 20, view.frame.origin.y, view.frame.size.width, view.frame.size.height);
-            }
-        }
+    self.scrollView = [[UIScrollView alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    self.scrollView.backgroundColor = [UIColor colorWithWhite:0.15f alpha:1.0f];
+    self.scrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.scrollView.alwaysBounceVertical = YES;
+    self.view = self.scrollView;
+    
+    [self newSettingsLabel:@"Resolution"];
+    self.resolutionSelector = [self newSelectorWithTitles:@[@"360p", @"720p", @"1080p", @"4K", @"Safe Area", @"Full", @"Custom"] selected:1];
+    self.resolutionSelector.apportionsSegmentWidthsByContent = YES;
+    
+    self.resolutionDisplayView = [[UIView alloc] init];
+    self.resolutionDisplayView.backgroundColor = [UIColor colorWithWhite:0.3f alpha:1.0f];
+    [self.scrollView addSubview:self.resolutionDisplayView];
+    [_layoutViews addObject:self.resolutionDisplayView];
+    
+    self.framerateSelector = [self newSettingWithTitle:@"Frame Rate" segments:@[@"30 FPS", @"60 FPS", @"120 FPS"] selected:1];
+    
+    self.bitrateLabel = [self newSettingsLabel:@"Bitrate: 10 Mbps"];
+    self.bitrateSlider = [[UISlider alloc] init];
+    self.bitrateSlider.minimumTrackTintColor = [UIColor whiteColor];
+    [self.scrollView addSubview:self.bitrateSlider];
+    [_layoutViews addObject:self.bitrateSlider];
+    
+    self.touchModeSelector = [self newSettingWithTitle:@"Touch Mode" segments:@[@"Touchpad", @"Touchscreen"] selected:0];
+    self.onscreenControlSelector = [self newSettingWithTitle:@"On-Screen Controls" segments:@[@"Off", @"Auto", @"Simple", @"Full"] selected:1];
+    self.optimizeSettingsSelector = [self newSettingWithTitle:@"Optimize Game Settings" segments:@[@"No", @"Yes"] selected:1];
+    self.multiControllerSelector = [self newSettingWithTitle:@"Multi-Controller Mode" segments:@[@"Single", @"Auto"] selected:1];
+    self.swapABXYButtonsSelector = [self newSettingWithTitle:@"Swap A/B and X/Y Buttons" segments:@[@"No", @"Yes"] selected:0];
+    self.audioOnPCSelector = [self newSettingWithTitle:@"Play Audio on PC" segments:@[@"No", @"Yes"] selected:0];
+    self.codecSelector = [self newSettingWithTitle:@"Preferred Codec" segments:@[@"H.264", @"HEVC", @"AV1", @"Auto"] selected:3];
+    self.hdrSelector = [self newSettingWithTitle:@"HDR (Beta)" segments:@[@"No", @"Yes"] selected:0];
+    self.framePacingSelector = [self newSettingWithTitle:@"Frame Pacing Preference" segments:@[@"Lowest Latency", @"Smoothest Video"] selected:0];
+    self.btMouseSelector = [self newSettingWithTitle:@"Citrix X1 Mouse Support" segments:@[@"No", @"Yes"] selected:0];
+    self.statsOverlaySelector = [self newSettingWithTitle:@"Statistics Overlay" segments:@[@"No", @"Yes"] selected:0];
+}
+
+// Lay out the stacked settings rows and update the scroll view's content size
+-(void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    
+    // Only the left part of this view is visible when the settings pane is revealed
+    CGFloat visibleWidth = self.view.bounds.size.width;
+    if (self.revealViewController != nil && self.revealViewController.rearViewRevealWidth > 0) {
+        visibleWidth = MIN(visibleWidth, self.revealViewController.rearViewRevealWidth);
     }
+    CGFloat width = visibleWidth - 2 * kSettingsMargin;
+    CGFloat y = 20;
+    
+    for (UIView* view in _layoutViews) {
+        CGFloat height;
+        if ([view isKindOfClass:[UILabel class]]) {
+            if (view != self.bitrateLabel) {
+                y += kSettingsGroupSpacing;
+            }
+            height = kSettingsLabelHeight;
+        }
+        else if (view == self.resolutionDisplayView) {
+            height = 35;
+        }
+        else {
+            height = kSettingsControlHeight;
+        }
+        
+        view.frame = CGRectMake(kSettingsMargin, y, width, height);
+        y += height + kSettingsSpacing;
+    }
+    
+    [self updateResolutionDisplayViewText];
+    
+    // Add a bit of padding so the view doesn't end right at the bottom of the display
+    self.scrollView.contentSize = CGSizeMake(visibleWidth, y + 20);
 }
 
 BOOL isCustomResolution(CGSize res) {
@@ -129,23 +193,20 @@ BOOL isCustomResolution(CGSize res) {
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    // Always run settings in dark mode because we want the light fonts
-    if (@available(iOS 13.0, tvOS 13.0, *)) {
-        self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    }
-    
     DataManager* dataMan = [[DataManager alloc] init];
     TemporarySettings* currentSettings = [dataMan getSettings];
     
     // Ensure we pick a bitrate that falls exactly onto a slider notch
     _bitrate = bitrateTable[[self getSliderValueForBitrate:[currentSettings.bitrate intValue]]];
 
-    // Get the size of the screen with and without safe area insets
-    UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
-    CGFloat screenScale = window.screen.scale;
-    CGFloat safeAreaWidth = (window.frame.size.width - window.safeAreaInsets.left - window.safeAreaInsets.right) * screenScale;
-    CGFloat fullScreenWidth = window.frame.size.width * screenScale;
-    CGFloat fullScreenHeight = window.frame.size.height * screenScale;
+    // Get the size of the screen. There are no safe area insets on iOS 8 devices,
+    // so "Safe Area" and "Full" are the same. The app is landscape-only, so
+    // make sure we report the landscape dimensions.
+    UIScreen *screen = [UIScreen mainScreen];
+    CGFloat screenScale = screen.scale;
+    CGFloat fullScreenWidth = MAX(screen.bounds.size.width, screen.bounds.size.height) * screenScale;
+    CGFloat fullScreenHeight = MIN(screen.bounds.size.width, screen.bounds.size.height) * screenScale;
+    CGFloat safeAreaWidth = fullScreenWidth;
     
     self.resolutionDisplayView.layer.cornerRadius = 10;
     self.resolutionDisplayView.clipsToBounds = YES;
@@ -188,62 +249,32 @@ BOOL isCustomResolution(CGSize res) {
         }
     }
 
-    // Only show the 120 FPS option if we have a > 60-ish Hz display
-    bool enable120Fps = false;
-    if (@available(iOS 10.3, tvOS 10.3, *)) {
-        if ([UIScreen mainScreen].maximumFramesPerSecond > 62) {
-            enable120Fps = true;
-        }
-    }
-    if (!enable120Fps) {
-        [self.framerateSelector removeSegmentAtIndex:2 animated:NO];
-    }
+    // iOS 8 devices all have 60 Hz displays, so there's no 120 FPS option
+    [self.framerateSelector removeSegmentAtIndex:2 animated:NO];
 
-    // Disable codec selector segments for unsupported codecs
-#if defined(__IPHONE_16_0) || defined(__TVOS_16_0)
-    if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1))
-#endif
-    {
-        [self.codecSelector removeSegmentAtIndex:2 animated:NO];
-    }
-    if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)) {
-        [self.codecSelector removeSegmentAtIndex:1 animated:NO];
-
-        // Only enable the 4K option for "recent" devices. We'll judge that by whether
-        // they support HEVC decoding (A9 or later).
-        [self.resolutionSelector setEnabled:NO forSegmentAtIndex:3];
-    }
-    switch (currentSettings.preferredCodec) {
-        case CODEC_PREF_AUTO:
-            [self.codecSelector setSelectedSegmentIndex:self.codecSelector.numberOfSegments - 1];
-            break;
-            
-        case CODEC_PREF_AV1:
-            [self.codecSelector setSelectedSegmentIndex:2];
-            break;
-            
-        case CODEC_PREF_HEVC:
-            [self.codecSelector setSelectedSegmentIndex:1];
-            break;
-            
-        case CODEC_PREF_H264:
-            [self.codecSelector setSelectedSegmentIndex:0];
-            break;
-    }
+    // iOS 8 devices can only decode H.264 in hardware (HEVC needs iOS 11 and an
+    // A9 SoC, AV1 needs an A17), and none of them have HDR displays.
+    [self.codecSelector removeAllSegments];
+    [self.codecSelector insertSegmentWithTitle:@"H.264" atIndex:0 animated:NO];
+    [self.codecSelector setSelectedSegmentIndex:0];
+    [self.codecSelector setEnabled:NO];
     
-    if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) || !(AVPlayer.availableHDRModes & AVPlayerHDRModeHDR10)) {
-        [self.hdrSelector removeAllSegments];
-        [self.hdrSelector insertSegmentWithTitle:@"Unsupported on this device" atIndex:0 animated:NO];
-        [self.hdrSelector setEnabled:NO];
-    }
-    else {
-        [self.hdrSelector setSelectedSegmentIndex:currentSettings.enableHdr ? 1 : 0];
-    }
+    // 4K H.264 decoding is beyond the hardware decoders of these devices
+    [self.resolutionSelector setEnabled:NO forSegmentAtIndex:3];
+    
+    [self.hdrSelector removeAllSegments];
+    [self.hdrSelector insertSegmentWithTitle:@"Unsupported on this device" atIndex:0 animated:NO];
+    [self.hdrSelector setEnabled:NO];
+    
+    // Citrix X1 mouse support is implemented in Swift, which isn't available
+    // in the iOS 8 build.
+    [self.btMouseSelector removeAllSegments];
+    [self.btMouseSelector insertSegmentWithTitle:@"Unsupported on this device" atIndex:0 animated:NO];
+    [self.btMouseSelector setEnabled:NO];
     
     [self.touchModeSelector setSelectedSegmentIndex:currentSettings.absoluteTouchMode ? 1 : 0];
     [self.touchModeSelector addTarget:self action:@selector(touchModeChanged) forControlEvents:UIControlEventValueChanged];
     [self.statsOverlaySelector setSelectedSegmentIndex:currentSettings.statsOverlay ? 1 : 0];
-    [self.btMouseSelector setSelectedSegmentIndex:currentSettings.btMouseSupport ? 1 : 0];
     [self.optimizeSettingsSelector setSelectedSegmentIndex:currentSettings.optimizeGames ? 1 : 0];
     [self.framePacingSelector setSelectedSegmentIndex:currentSettings.useFramePacing ? 1 : 0];
     [self.multiControllerSelector setSelectedSegmentIndex:currentSettings.multiController ? 1 : 0];
@@ -390,12 +421,6 @@ BOOL isCustomResolution(CGSize res) {
         
         // H.264 maximum
         int maxResolutionDimension = 4096;
-        if (@available(iOS 11.0, tvOS 11.0, *)) {
-            if (VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)) {
-                // HEVC maximum
-                maxResolutionDimension = 8192;
-            }
-        }
         
         // Cap to maximum valid dimensions
         width = MIN(width, maxResolutionDimension);
@@ -426,7 +451,7 @@ BOOL isCustomResolution(CGSize res) {
 - (void)resolutionDisplayViewTapped:(UITapGestureRecognizer *)sender {
     NSURL *url = [NSURL URLWithString:@"https://moonlight-stream.org/custom-resolution"];
     if ([[UIApplication sharedApplication] canOpenURL:url]) {
-        [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+        [[UIApplication sharedApplication] openURL:url];
     }
 }
 
@@ -444,11 +469,13 @@ BOOL isCustomResolution(CGSize res) {
     UILabel *label1 = [[UILabel alloc] init];
     label1.text = @"Set PC/Game resolution: ";
     label1.font = [UIFont systemFontOfSize:fontSize];
+    label1.textColor = [UIColor whiteColor];
     [label1 sizeToFit];
     label1.frame = CGRectMake(padding, (viewFrameHeight - label1.frame.size.height) / 2, label1.frame.size.width, label1.frame.size.height);
 
     UILabel *label2 = [[UILabel alloc] init];
     label2.text = [NSString stringWithFormat:@"%ld x %ld", (long)width, (long)height];
+    label2.textColor = [UIColor whiteColor];
     [label2 sizeToFit];
     label2.frame = CGRectMake(viewFrameWidth - label2.frame.size.width - padding, (viewFrameHeight - label2.frame.size.height) / 2, label2.frame.size.width, label2.frame.size.height);
 
@@ -481,25 +508,8 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (uint32_t) getChosenCodecPreference {
-    // Auto is always the last segment
-    if (self.codecSelector.selectedSegmentIndex == self.codecSelector.numberOfSegments - 1) {
-        return CODEC_PREF_AUTO;
-    }
-    else {
-        switch (self.codecSelector.selectedSegmentIndex) {
-            case 0:
-                return CODEC_PREF_H264;
-                
-            case 1:
-                return CODEC_PREF_HEVC;
-                
-            case 2:
-                return CODEC_PREF_AV1;
-                
-            default:
-                abort();
-        }
-    }
+    // Only H.264 is available on iOS 8 devices
+    return CODEC_PREF_H264;
 }
 
 - (NSInteger) getChosenStreamHeight {
@@ -533,11 +543,11 @@ BOOL isCustomResolution(CGSize res) {
     BOOL swapABXYButtons = [self.swapABXYButtonsSelector selectedSegmentIndex] == 1;
     BOOL audioOnPC = [self.audioOnPCSelector selectedSegmentIndex] == 1;
     uint32_t preferredCodec = [self getChosenCodecPreference];
-    BOOL btMouseSupport = [self.btMouseSelector selectedSegmentIndex] == 1;
+    BOOL btMouseSupport = NO;
     BOOL useFramePacing = [self.framePacingSelector selectedSegmentIndex] == 1;
     BOOL absoluteTouchMode = [self.touchModeSelector selectedSegmentIndex] == 1;
     BOOL statsOverlay = [self.statsOverlaySelector selectedSegmentIndex] == 1;
-    BOOL enableHdr = [self.hdrSelector selectedSegmentIndex] == 1;
+    BOOL enableHdr = NO;
     [dataMan saveSettingsWithBitrate:_bitrate
                            framerate:framerate
                               height:height
@@ -559,12 +569,6 @@ BOOL isCustomResolution(CGSize res) {
 - (void)didReceiveMemoryWarning {
     [super didReceiveMemoryWarning];
     // Dispose of any resources that can be recreated.
-}
-
-
-#pragma mark - Navigation
-
-- (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {
 }
 
 

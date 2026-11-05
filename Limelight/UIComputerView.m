@@ -102,7 +102,7 @@ static const int LABEL_DY = 20;
     self = [self init];
     _callback = callback;
     
-    [self addTarget:self action:@selector(addClicked) forControlEvents:UIControlEventPrimaryActionTriggered];
+    [self addTarget:self action:@selector(addClicked) forControlEvents:UIControlEventTouchUpInside];
     
     [_hostLabel setText:@"Add Host Manually"];
     [_hostLabel sizeToFit];
@@ -133,7 +133,7 @@ static const int LABEL_DY = 20;
         [self addGestureRecognizer:longPressRecognizer];
     }
     
-    [self addTarget:self action:@selector(hostClicked) forControlEvents:UIControlEventPrimaryActionTriggered];
+    [self addTarget:self action:@selector(hostClicked) forControlEvents:UIControlEventTouchUpInside];
     
     [self updateContentsForHost:host];
 

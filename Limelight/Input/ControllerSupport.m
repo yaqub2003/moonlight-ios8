@@ -14,8 +14,8 @@
 #import "DataManager.h"
 #include "Limelight.h"
 
-@import GameController;
-@import AudioToolbox;
+#import <GameController/GameController.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 static const double MOUSE_SPEED_DIVISOR = 1.25;
 

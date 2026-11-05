@@ -5,7 +5,7 @@
 //  Copyright (c) 2014 Moonlight Stream. All rights reserved.
 //
 
-@import ImageIO;
+#import <ImageIO/ImageIO.h>
 
 #import "MainFrameViewController.h"
 #import "CryptoManager.h"
@@ -26,6 +26,7 @@
 #import "TemporaryApp.h"
 #import "IdManager.h"
 #import "ConnectionHelper.h"
+#import "AppCollectionView.h"
 
 #if !TARGET_OS_TV
 #import "SettingsViewController.h"
@@ -58,6 +59,46 @@
 #endif
 }
 static NSMutableSet* hostList;
+
+// This view controller used to be instantiated from the storyboard. These
+// values come from the collection view layouts in iPad.storyboard and
+// iPhone.storyboard.
+- (instancetype)init {
+    UICollectionViewFlowLayout* layout = [[UICollectionViewFlowLayout alloc] init];
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        layout.itemSize = CGSizeMake(150, 200);
+        layout.minimumLineSpacing = 20;
+        layout.minimumInteritemSpacing = 20;
+    }
+    else {
+        layout.itemSize = CGSizeMake(90, 120);
+        layout.minimumLineSpacing = 15;
+        layout.minimumInteritemSpacing = 15;
+    }
+    layout.sectionInset = UIEdgeInsetsMake(20, 20, 20, 20);
+    
+    return [super initWithCollectionViewLayout:layout];
+}
+
+- (void)loadView {
+    AppCollectionView* collectionView = [[AppCollectionView alloc] initWithFrame:[UIScreen mainScreen].bounds
+                                                            collectionViewLayout:self.collectionViewLayout];
+    collectionView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    collectionView.backgroundColor = [UIColor colorWithRed:0.333f green:0.333f blue:0.333f alpha:1.0f];
+    collectionView.indicatorStyle = UIScrollViewIndicatorStyleBlack;
+    collectionView.dataSource = self;
+    collectionView.delegate = self;
+    [collectionView registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:@"AppCell"];
+    
+    self.view = collectionView;
+    self.collectionView = collectionView;
+}
+
+- (void)showStreamFrame {
+    StreamFrameViewController* streamFrame = [[StreamFrameViewController alloc] init];
+    streamFrame.streamConfig = _streamConfig;
+    [self.navigationController pushViewController:streamFrame animated:YES];
+}
 
 - (void)startPairing:(NSString *)PIN {
     // Needs to be synchronous to ensure the alert is shown before any potential
@@ -613,12 +654,10 @@ static NSMutableSet* hostList;
     TemporarySettings* streamSettings = [dataMan getSettings];
     
     _streamConfig.frameRate = [streamSettings.framerate intValue];
-    if (@available(iOS 10.3, *)) {
-        // Don't stream more FPS than the display can show
-        if (_streamConfig.frameRate > [UIScreen mainScreen].maximumFramesPerSecond) {
-            _streamConfig.frameRate = (int)[UIScreen mainScreen].maximumFramesPerSecond;
-            Log(LOG_W, @"Clamping FPS to maximum refresh rate: %d", _streamConfig.frameRate);
-        }
+    // Don't stream more FPS than the display can show (all iOS 8 devices are 60 Hz)
+    if (_streamConfig.frameRate > 60) {
+        _streamConfig.frameRate = 60;
+        Log(LOG_W, @"Clamping FPS to maximum refresh rate: %d", _streamConfig.frameRate);
     }
     
     _streamConfig.height = [streamSettings.height intValue];
@@ -662,44 +701,8 @@ static NSMutableSet* hostList;
     
     _streamConfig.serverCodecModeSupport = app.host.serverCodecModeSupport;
     
-    switch (streamSettings.preferredCodec) {
-        case CODEC_PREF_AV1:
-#if defined(__IPHONE_16_0) || defined(__TVOS_16_0)
-            if (VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)) {
-                _streamConfig.supportedVideoFormats |= VIDEO_FORMAT_AV1_MAIN8;
-            }
-#endif
-            // Fall-through
-            
-        case CODEC_PREF_AUTO:
-        case CODEC_PREF_HEVC:
-            if (VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)) {
-                _streamConfig.supportedVideoFormats |= VIDEO_FORMAT_H265;
-            }
-            // Fall-through
-            
-        case CODEC_PREF_H264:
-            _streamConfig.supportedVideoFormats |= VIDEO_FORMAT_H264;
-            break;
-    }
-    
-    // HEVC is supported if the user wants it (or it's required by the chosen resolution) and the SoC supports it
-    if ((_streamConfig.width > 4096 || _streamConfig.height > 4096 || streamSettings.enableHdr) && VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC)) {
-        _streamConfig.supportedVideoFormats |= VIDEO_FORMAT_H265;
-        
-        // HEVC Main10 is supported if the user wants it and the display supports it
-        if (streamSettings.enableHdr && (AVPlayer.availableHDRModes & AVPlayerHDRModeHDR10) != 0) {
-            _streamConfig.supportedVideoFormats |= VIDEO_FORMAT_H265_MAIN10;
-        }
-    }
-    
-#if defined(__IPHONE_16_0) || defined(__TVOS_16_0)
-    // Add the AV1 Main10 format if AV1 and HDR are both enabled and supported
-    if ((_streamConfig.supportedVideoFormats & VIDEO_FORMAT_MASK_AV1) && streamSettings.enableHdr &&
-        VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1) && (AVPlayer.availableHDRModes & AVPlayerHDRModeHDR10) != 0) {
-        _streamConfig.supportedVideoFormats |= VIDEO_FORMAT_AV1_MAIN10;
-    }
-#endif
+    // iOS 8 devices can only decode H.264 in hardware
+    _streamConfig.supportedVideoFormats = VIDEO_FORMAT_H264;
 }
 
 - (void)appLongClicked:(TemporaryApp *)app view:(UIView *)view {
@@ -748,7 +751,7 @@ static NSMutableSet* hostList;
             [self prepareToStreamApp:app];
         }
 
-        [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+        [self showStreamFrame];
     }]];
     
     if (currentApp != nil) {
@@ -802,7 +805,7 @@ static NSMutableSet* hostList;
                                                         if (![app.id isEqualToString:currentApp.id]) {
                                                             [self prepareToStreamApp:app];
                                                             [self hideLoadingFrame: ^{
-                                                                [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+                                                                [self showStreamFrame];
                                                             }];
                                                         }
                                                         else {
@@ -857,7 +860,7 @@ static NSMutableSet* hostList;
         [self appLongClicked:app view:view];
     } else {
         [self prepareToStreamApp:app];
-        [self performSegueWithIdentifier:@"createStreamFrame" sender:nil];
+        [self showStreamFrame];
     }
 }
 
@@ -887,13 +890,6 @@ static NSMutableSet* hostList;
 }
 #endif
 
-- (void)prepareForSegue:(UIStoryboardSegue *)segue sender:(id)sender {
-    if ([segue.destinationViewController isKindOfClass:[StreamFrameViewController class]]) {
-        StreamFrameViewController* streamFrame = segue.destinationViewController;
-        streamFrame.streamConfig = _streamConfig;
-    }
-}
-
 - (void) showLoadingFrame:(void (^)(void))completion {
     [_loadingFrame showLoadingFrame:completion];
 }
@@ -903,27 +899,17 @@ static NSMutableSet* hostList;
     [_loadingFrame dismissLoadingFrame:completion];
 }
 
-- (void)adjustScrollViewForSafeArea:(UIScrollView*)view {
-    if (@available(iOS 11.0, *)) {
-        if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-            view.contentInset = UIEdgeInsetsMake(0, 20, 0, 20);
-        }
-    }
-}
-
-// Adjust the subviews for the safe area on the iPhone X.
-- (void)viewSafeAreaInsetsDidChange {
-    [super viewSafeAreaInsetsDidChange];
-    
-    [self adjustScrollViewForSafeArea:self.collectionView];
-    [self adjustScrollViewForSafeArea:self->hostScrollView];
-}
-
 - (void)viewDidLoad
 {
     [super viewDidLoad];
         
 #if !TARGET_OS_TV
+    // These buttons used to come from the storyboard
+    _settingsButton = [[UIBarButtonItem alloc] initWithTitle:@"Settings" style:UIBarButtonItemStylePlain target:nil action:nil];
+    _upButton = [[UIBarButtonItem alloc] initWithTitle:nil style:UIBarButtonItemStylePlain target:nil action:nil];
+    self.navigationItem.leftBarButtonItem = _settingsButton;
+    self.navigationItem.rightBarButtonItem = _upButton;
+    
     // Set the side bar button action. When it's tapped, it'll show the sidebar.
     [_settingsButton setTarget:self.revealViewController];
     [_settingsButton setAction:@selector(revealToggle:)];
@@ -958,7 +944,7 @@ static NSMutableSet* hostList;
     self.navigationController.navigationBar.titleTextAttributes = [NSDictionary dictionaryWithObject:[UIColor whiteColor] forKey:NSForegroundColorAttributeName];
 #endif
     
-    _loadingFrame = [self.storyboard instantiateViewControllerWithIdentifier:@"loadingFrame"];
+    _loadingFrame = [[LoadingFrameViewController alloc] init];
     
     // Set the current position to the center
     currentPosition = FrontViewPositionLeft;
@@ -980,6 +966,9 @@ static NSMutableSet* hostList;
         
     hostScrollView = [[ComputerScrollView alloc] init];
     hostScrollView.frame = CGRectMake(0, self.navigationController.navigationBar.frame.origin.y + self.navigationController.navigationBar.frame.size.height, self.view.frame.size.width, self.view.frame.size.height / 2);
+    // Our view is created in code, so it may still have portrait dimensions here
+    // when launching on iOS 8. Let the host list follow the final layout.
+    hostScrollView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight | UIViewAutoresizingFlexibleBottomMargin;
     [hostScrollView setShowsHorizontalScrollIndicator:NO];
     hostScrollView.delaysContentTouches = NO;
     
@@ -1197,27 +1186,8 @@ static NSMutableSet* hostList;
 }
 
 - (void)updateHostShortcuts {
-#if !TARGET_OS_TV
-    NSMutableArray* quickActions = [[NSMutableArray alloc] init];
-    
-    @synchronized (hostList) {
-        for (TemporaryHost* host in hostList) {
-            // Pair state may be unknown if we haven't polled it yet, but the app list
-            // count will persist from paired PCs
-            if ([host.appList count] > 0) {
-                UIApplicationShortcutItem* shortcut = [[UIApplicationShortcutItem alloc]
-                                                       initWithType:@"PC"
-                                                       localizedTitle:host.name
-                                                       localizedSubtitle:nil
-                                                       icon:[UIApplicationShortcutIcon iconWithType:UIApplicationShortcutIconTypePlay]
-                                                       userInfo:[NSDictionary dictionaryWithObject:host.uuid forKey:@"UUID"]];
-                [quickActions addObject: shortcut];
-            }
-        }
-    }
-    
-    [UIApplication sharedApplication].shortcutItems = quickActions;
-#endif
+    // Home screen quick actions (3D Touch) require iOS 9, so there's
+    // nothing to do here on iOS 8.
 }
 
 - (void)updateHosts {
@@ -1426,15 +1396,5 @@ static NSMutableSet* hostList;
     return YES;
 }
 #endif
-
-- (void)didUpdateFocusInContext:(UIFocusUpdateContext *)context withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
-    
-#if !TARGET_OS_TV
-    if (context.nextFocusedView != nil) {
-        [context.nextFocusedView setAlpha:0.8];
-    }
-    [context.previouslyFocusedView setAlpha:1.0];
-#endif
-}
 
 @end

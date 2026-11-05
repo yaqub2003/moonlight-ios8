@@ -7,6 +7,10 @@
 //
 
 #import "AppDelegate.h"
+#import "MoonlightModel.h"
+#import "MainFrameViewController.h"
+#import "SettingsViewController.h"
+#import "SWRevealViewController.h"
 
 @implementation AppDelegate
 
@@ -23,21 +27,40 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
 #endif
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-#if !TARGET_OS_TV
-    UIApplicationShortcutItem* shortcut = [launchOptions valueForKey:UIApplicationLaunchOptionsShortcutItemKey];
-    if (shortcut != nil) {
-        _pcUuidToLoad = (NSString*)[shortcut.userInfo objectForKey:@"UUID"];
-    }
-#endif
+    // The iOS 8 build has no storyboards, so build the view controller
+    // hierarchy that iPad.storyboard and iPhone.storyboard used to describe:
+    //
+    // SWRevealViewController
+    //   rear:  SettingsViewController
+    //   front: UINavigationController -> MainFrameViewController
+    //            (pushes StreamFrameViewController when streaming)
+    MainFrameViewController* mainFrame = [[MainFrameViewController alloc] init];
+    UINavigationController* navController = [[UINavigationController alloc] initWithRootViewController:mainFrame];
+    
+    UIColor* barColor = [UIColor colorWithRed:0.667f green:0.667f blue:0.667f alpha:1.0f];
+    navController.navigationBar.barStyle = UIBarStyleBlack;
+    navController.navigationBar.translucent = NO;
+    navController.navigationBar.barTintColor = barColor;
+    navController.navigationBar.backgroundColor = barColor;
+    navController.navigationBar.tintColor = [UIColor whiteColor];
+    
+    SettingsViewController* settings = [[SettingsViewController alloc] init];
+    
+    SWRevealViewController* revealController = [[SWRevealViewController alloc] initWithRearViewController:settings
+                                                                                      frontViewController:navController];
+    
+    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    self.window.backgroundColor = [UIColor blackColor];
+    
+    // Don't let the settings pane take over the entire screen on small iPhones
+    CGFloat screenWidth = MAX([UIScreen mainScreen].bounds.size.width, [UIScreen mainScreen].bounds.size.height);
+    revealController.rearViewRevealWidth = MIN(revealController.rearViewRevealWidth, screenWidth - 60);
+    
+    self.window.rootViewController = revealController;
+    [self.window makeKeyAndVisible];
+    
     return YES;
 }
-
-#if !TARGET_OS_TV
-- (void)application:(UIApplication *)application performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL succeeded))completionHandler {
-    _pcUuidToLoad = (NSString*)[shortcutItem.userInfo objectForKey:@"UUID"];
-    _shortcutCompletionHandler = completionHandler;
-}
-#endif
 
 - (void)applicationWillResignActive:(UIApplication *)application
 {
@@ -113,7 +136,8 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
     if (_managedObjectModel != nil) {
         return _managedObjectModel;
     }
-    _managedObjectModel = [NSManagedObjectModel mergedModelFromBundles:nil];
+    // The model is built in code because the iOS 8 build doesn't use Xcode's model compiler
+    _managedObjectModel = [MoonlightModel managedObjectModel];
     return _managedObjectModel;
 }
 

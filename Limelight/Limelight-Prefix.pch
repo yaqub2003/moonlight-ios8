@@ -22,3 +22,5 @@
 #import <CoreData/CoreData.h>
 #import "Logger.h"
 #endif
+
+#import "iOS8Compat.h"

@@ -15,7 +15,7 @@
 #import "AbsoluteTouchHandler.h"
 #import "KeyboardInputField.h"
 
-static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
+#import <objc/runtime.h>
 
 @implementation StreamView {
     OnScreenControls* onScreenControls;
@@ -31,11 +31,6 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     float lastMouseX;
     float lastMouseY;
     CGPoint lastScrollTranslation;
-    
-    // Citrix X1 mouse support
-    X1Mouse* x1mouse;
-    double accumulatedMouseDeltaX;
-    double accumulatedMouseDeltaY;
     
     UIResponder* touchHandler;
     
@@ -117,12 +112,8 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
 #endif
 #endif
     
-    x1mouse = [[X1Mouse alloc] init];
-    x1mouse.delegate = self;
-    
-    if (settings.btMouseSupport) {
-        [x1mouse start];
-    }
+    // Citrix X1 mouse support (X1Kit) is written in Swift, which can't be
+    // built for iOS 8 / 32-bit ARM, so it is not available in this build.
     
     // This is critical to ensure keyboard events are delivered to this
     // StreamView and not our parent UIView, especially on tvOS.
@@ -269,11 +260,15 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     CGPoint location = [self adjustCoordinatesForVideoArea:[event locationInView:self]];
     CGSize videoSize = [self getVideoAreaSize];
     
-    return LiSendPenEvent(type, LI_TOOL_TYPE_PEN, 0, location.x / videoSize.width, location.y / videoSize.height,
-                          (event.force / event.maximumPossibleForce) / sin(event.altitudeAngle),
-                          0.0f, 0.0f,
-                          [self getRotationFromAzimuthAngle:[event azimuthAngleInView:self]],
-                          [self getTiltFromAltitudeAngle:event.altitudeAngle]) != LI_ERR_UNSUPPORTED;
+    // Stylus pressure and angle data require iOS 9.1 (Apple Pencil)
+    if (@available(iOS 9.1, *)) {
+        return LiSendPenEvent(type, LI_TOOL_TYPE_PEN, 0, location.x / videoSize.width, location.y / videoSize.height,
+                              (event.force / event.maximumPossibleForce) / sin(event.altitudeAngle),
+                              0.0f, 0.0f,
+                              [self getRotationFromAzimuthAngle:[event azimuthAngleInView:self]],
+                              [self getTiltFromAltitudeAngle:event.altitudeAngle]) != LI_ERR_UNSUPPORTED;
+    }
+    return NO;
 }
 
 - (void)sendStylusHoverEvent:(UIHoverGestureRecognizer*)gesture API_AVAILABLE(ios(13.0)) {
@@ -900,53 +895,6 @@ static const double X1_MOUSE_SPEED_DIVISOR = 2.5;
     }
     
     return commands;
-}
-
-- (void)connectedStateDidChangeWithIdentifier:(NSUUID * _Nonnull)identifier isConnected:(BOOL)isConnected {
-    NSLog(@"Citrix X1 mouse state change: %@ -> %s",
-          identifier, isConnected ? "connected" : "disconnected");
-}
-
-- (void)mouseDidMoveWithIdentifier:(NSUUID * _Nonnull)identifier deltaX:(int16_t)deltaX deltaY:(int16_t)deltaY {
-    accumulatedMouseDeltaX += deltaX / X1_MOUSE_SPEED_DIVISOR;
-    accumulatedMouseDeltaY += deltaY / X1_MOUSE_SPEED_DIVISOR;
-    
-    short shortX = (short)accumulatedMouseDeltaX;
-    short shortY = (short)accumulatedMouseDeltaY;
-    
-    if (shortX == 0 && shortY == 0) {
-        return;
-    }
-    
-    LiSendMouseMoveEvent(shortX, shortY);
-    
-    accumulatedMouseDeltaX -= shortX;
-    accumulatedMouseDeltaY -= shortY;
-}
-
-- (int) buttonFromX1ButtonCode:(enum X1MouseButton)button {
-    switch (button) {
-        case X1MouseButtonLeft:
-            return BUTTON_LEFT;
-        case X1MouseButtonRight:
-            return BUTTON_RIGHT;
-        case X1MouseButtonMiddle:
-            return BUTTON_MIDDLE;
-        default:
-            return -1;
-    }
-}
-
-- (void)mouseDownWithIdentifier:(NSUUID * _Nonnull)identifier button:(enum X1MouseButton)button {
-    LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, [self buttonFromX1ButtonCode:button]);
-}
-
-- (void)mouseUpWithIdentifier:(NSUUID * _Nonnull)identifier button:(enum X1MouseButton)button {
-    LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, [self buttonFromX1ButtonCode:button]);
-}
-
-- (void)wheelDidScrollWithIdentifier:(NSUUID * _Nonnull)identifier deltaZ:(int8_t)deltaZ {
-    LiSendScrollEvent(deltaZ);
 }
 
 #if !TARGET_OS_TV

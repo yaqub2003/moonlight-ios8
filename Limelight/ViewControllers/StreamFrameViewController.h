@@ -13,7 +13,7 @@
 #import <UIKit/UIKit.h>
 
 #if TARGET_OS_TV
-@import GameController;
+#import <GameController/GameController.h>
 
 @interface StreamFrameViewController : GCEventViewController <ConnectionCallbacks, ControllerSupportDelegate, UserInteractionDelegate, UIScrollViewDelegate>
 #else

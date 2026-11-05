@@ -7,7 +7,7 @@
 //
 
 #import "Utils.h"
-#import "Host+CoreDataClass.h"
+#import "MoonlightModel.h"
 
 @interface TemporaryHost : NSObject
 

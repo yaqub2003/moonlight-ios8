@@ -60,7 +60,7 @@ static UIImage* noImage;
         [self addGestureRecognizer:longPressRecognizer];
     }
     
-    [self addTarget:self action:@selector(appClicked:) forControlEvents:UIControlEventPrimaryActionTriggered];
+    [self addTarget:self action:@selector(appClicked:) forControlEvents:UIControlEventTouchUpInside];
     
     [self addTarget:self action:@selector(buttonSelected:) forControlEvents:UIControlEventTouchDown];
     [self addTarget:self action:@selector(buttonDeselected:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchCancel | UIControlEventTouchDragExit];

@@ -11,8 +11,8 @@
 
 #import <VideoToolbox/VideoToolbox.h>
 
-#define SDL_MAIN_HANDLED
-#import <SDL.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import <AVFoundation/AVFoundation.h>
 
 #include "Limelight.h"
 #include "opus_multistream.h"
@@ -38,9 +38,16 @@ static video_stats_t currentVideoStats;
 static video_stats_t lastVideoStats;
 static NSLock* videoStatsLock;
 
-static SDL_AudioDeviceID audioDevice;
+// Audio output uses an AudioQueue directly. Upstream Moonlight uses SDL2
+// for this, but SDL2 no longer supports iOS 8 or 32-bit ARM.
+#define AUDIO_QUEUE_BUFFERS 10
+static AudioQueueRef audioQueue;
+static AudioQueueBufferRef audioQueueBuffers[AUDIO_QUEUE_BUFFERS];
+static AudioQueueBufferRef freeAudioBuffers[AUDIO_QUEUE_BUFFERS];
+static int freeAudioBufferCount;
+static NSLock* audioBufferLock;
+static dispatch_semaphore_t audioBufferSemaphore;
 static OPUS_MULTISTREAM_CONFIGURATION audioConfig;
-static void* audioBuffer;
 static int audioFrameSize;
 
 static VideoDecoderRenderer* renderer;
@@ -207,37 +214,27 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit)
                              decodeUnit:decodeUnit];
 }
 
+static void AudioQueueBufferDone(void* userData, AudioQueueRef queue, AudioQueueBufferRef buffer)
+{
+    // The buffer has been played, so return it to the free list
+    [audioBufferLock lock];
+    freeAudioBuffers[freeAudioBufferCount++] = buffer;
+    [audioBufferLock unlock];
+    dispatch_semaphore_signal(audioBufferSemaphore);
+}
+
 int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int flags)
 {
     int err;
-    SDL_AudioSpec want, have;
+    OSStatus status;
+    AudioStreamBasicDescription format;
     
-    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
-        Log(LOG_E, @"Failed to initialize audio subsystem: %s\n", SDL_GetError());
-        return -1;
-    }
-        
-    SDL_zero(want);
-    want.freq = opusConfig->sampleRate;
-    want.format = AUDIO_S16;
-    want.channels = opusConfig->channelCount;
-    want.samples = opusConfig->samplesPerFrame;
-
-    audioDevice = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (audioDevice == 0) {
-        Log(LOG_E, @"Failed to open audio device: %s\n", SDL_GetError());
-        ArCleanup();
-        return -1;
-    }
+    // Do not lower the volume of other audio streams
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
     
     audioConfig = *opusConfig;
     audioFrameSize = opusConfig->samplesPerFrame * sizeof(short) * opusConfig->channelCount;
-    audioBuffer = SDL_malloc(audioFrameSize);
-    if (audioBuffer == NULL) {
-        Log(LOG_E, @"Failed to allocate audio frame buffer");
-        ArCleanup();
-        return -1;
-    }
     
     opusDecoder = opus_multistream_decoder_create(opusConfig->sampleRate,
                                                   opusConfig->channelCount,
@@ -251,38 +248,72 @@ int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, v
         return -1;
     }
     
-    // Start playback
-    SDL_PauseAudioDevice(audioDevice, 0);
+    memset(&format, 0, sizeof(format));
+    format.mSampleRate = opusConfig->sampleRate;
+    format.mFormatID = kAudioFormatLinearPCM;
+    format.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
+    format.mChannelsPerFrame = opusConfig->channelCount;
+    format.mBitsPerChannel = 16;
+    format.mBytesPerFrame = sizeof(short) * opusConfig->channelCount;
+    format.mFramesPerPacket = 1;
+    format.mBytesPerPacket = format.mBytesPerFrame;
     
-    // Disable lowering volume of other audio streams (SDL sets AVAudioSessionCategoryOptionDuckOthers by default)
-    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
+    // A NULL run loop makes the AudioQueue invoke the callback on its own thread
+    status = AudioQueueNewOutput(&format, AudioQueueBufferDone, NULL, NULL, NULL, 0, &audioQueue);
+    if (status != noErr) {
+        Log(LOG_E, @"AudioQueueNewOutput() failed: %d", (int)status);
+        audioQueue = NULL;
+        ArCleanup();
+        return -1;
+    }
+    
+    audioBufferLock = [[NSLock alloc] init];
+    audioBufferSemaphore = dispatch_semaphore_create(0);
+    freeAudioBufferCount = 0;
+    for (int i = 0; i < AUDIO_QUEUE_BUFFERS; i++) {
+        status = AudioQueueAllocateBuffer(audioQueue, audioFrameSize, &audioQueueBuffers[i]);
+        if (status != noErr) {
+            Log(LOG_E, @"AudioQueueAllocateBuffer() failed: %d", (int)status);
+            ArCleanup();
+            return -1;
+        }
+        freeAudioBuffers[freeAudioBufferCount++] = audioQueueBuffers[i];
+        dispatch_semaphore_signal(audioBufferSemaphore);
+    }
+    
+    status = AudioQueueStart(audioQueue, NULL);
+    if (status != noErr) {
+        Log(LOG_E, @"AudioQueueStart() failed: %d", (int)status);
+        ArCleanup();
+        return -1;
+    }
     
     return 0;
 }
 
 void ArCleanup(void)
 {
+    if (audioQueue != NULL) {
+        // Stopping synchronously also disposes of the buffers
+        AudioQueueStop(audioQueue, true);
+        AudioQueueDispose(audioQueue, true);
+        audioQueue = NULL;
+    }
+    memset(audioQueueBuffers, 0, sizeof(audioQueueBuffers));
+    freeAudioBufferCount = 0;
+    audioBufferSemaphore = nil;
+    audioBufferLock = nil;
+    
     if (opusDecoder != NULL) {
         opus_multistream_decoder_destroy(opusDecoder);
         opusDecoder = NULL;
     }
-    
-    if (audioDevice != 0) {
-        SDL_CloseAudioDevice(audioDevice);
-        audioDevice = 0;
-    }
-    
-    if (audioBuffer != NULL) {
-        SDL_free(audioBuffer);
-        audioBuffer = NULL;
-    }
-    
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
 void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 {
     int decodeLen;
+    AudioQueueBufferRef buffer;
     
     // Don't queue if there's already more than 30 ms of audio data waiting
     // in Moonlight's audio queue.
@@ -290,21 +321,32 @@ void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
         return;
     }
     
-    decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
-                                        (short*)audioBuffer, audioConfig.samplesPerFrame, 0);
-    if (decodeLen > 0) {
-        // Provide backpressure on the queue to ensure too many frames don't build up
-        // in SDL's audio queue.
-        while (SDL_GetQueuedAudioSize(audioDevice) / audioFrameSize > 10) {
-            SDL_Delay(1);
-        }
-        
-        if (SDL_QueueAudio(audioDevice,
-                           audioBuffer,
-                           sizeof(short) * decodeLen * audioConfig.channelCount) < 0) {
-            Log(LOG_E, @"Failed to queue audio sample: %s\n", SDL_GetError());
-        }
+    // Provide backpressure: wait (briefly) until the AudioQueue hands a buffer back.
+    // If it doesn't within 100 ms, the audio device is stuck so drop the sample.
+    if (dispatch_semaphore_wait(audioBufferSemaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
+        return;
     }
+    
+    [audioBufferLock lock];
+    buffer = freeAudioBuffers[--freeAudioBufferCount];
+    [audioBufferLock unlock];
+    
+    decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
+                                        (short*)buffer->mAudioData, audioConfig.samplesPerFrame, 0);
+    if (decodeLen > 0) {
+        buffer->mAudioDataByteSize = (UInt32)(sizeof(short) * decodeLen * audioConfig.channelCount);
+        OSStatus status = AudioQueueEnqueueBuffer(audioQueue, buffer, 0, NULL);
+        if (status == noErr) {
+            return;
+        }
+        Log(LOG_E, @"AudioQueueEnqueueBuffer() failed: %d", (int)status);
+    }
+    
+    // Not submitted, so return the buffer to the free list
+    [audioBufferLock lock];
+    freeAudioBuffers[freeAudioBufferCount++] = buffer;
+    [audioBufferLock unlock];
+    dispatch_semaphore_signal(audioBufferSemaphore);
 }
 
 void ClStageStarting(int stage)
@@ -443,10 +485,16 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     _streamConfig.supportedVideoFormats = config.supportedVideoFormats;
     _streamConfig.audioConfiguration = config.audioConfiguration;
     
-    // Since we require iOS 12 or above, we're guaranteed to be running
-    // on a 64-bit device with ARMv8 crypto instructions, so we don't
-    // need to check for that here.
+#if defined(__arm64__) || defined(__aarch64__)
+    // 64-bit devices have ARMv8 crypto instructions, so encrypting
+    // everything is cheap.
     _streamConfig.encryptionFlags = ENCFLG_ALL;
+#else
+    // 32-bit devices (iPad 2/3/4, iPad mini 1, iPhone 4S/5/5c) have no
+    // AES acceleration. Only encrypt audio to save CPU, like Moonlight
+    // does on other platforms without hardware AES.
+    _streamConfig.encryptionFlags = ENCFLG_AUDIO;
+#endif
     
     if ([Utils isActiveNetworkVPN]) {
         // Force remote streaming mode when a VPN is connected

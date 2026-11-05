@@ -66,7 +66,7 @@ NSString *const deviceName = @"roth";
 
 #if !TARGET_OS_TV
 + (void) launchUrl:(NSString*)urlString {
-    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:urlString] options:@{} completionHandler:nil];
+    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:urlString]];
 }
 #endif
 
