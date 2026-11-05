@@ -249,6 +249,7 @@ app_sources() {
     echo "$COMMON_C/nanors/rs.c"
     echo "$COMMON_C/nanors/deps/obl/oblas_lite.c"
     echo "$COMMON_C/nanors/deps/obl/oblas_common.c"
+    echo "$IOS8/compat/compiler-rt-shims.c"
 }
 
 compile_one() {

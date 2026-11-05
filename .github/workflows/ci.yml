@@ -32,9 +32,10 @@ jobs:
             libssl-dev uuid-dev libxml2-dev zlib1g-dev
 
       # Building ld64 (cctools-port + libtapi) takes a while, so cache it.
-      # The key covers the pinned toolchain commits in build.sh.
-      - name: Cache toolchain and SDK
-        uses: actions/cache@v6
+      # The key covers the pinned versions in ios8/versions.sh.
+      - name: Restore toolchain and SDK
+        id: toolchain-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ios8/build/toolchain
@@ -46,6 +47,15 @@ jobs:
 
       - name: Build toolchain (ld64)
         run: ios8/build.sh toolchain
+
+      - name: Save toolchain and SDK
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ios8/build/toolchain
+            ios8/build/sdks
+          key: ios8-toolchain-${{ runner.os }}-${{ hashFiles('ios8/versions.sh') }}
 
       - name: Build dependencies (Opus, OpenSSL)
         run: ios8/build.sh deps
