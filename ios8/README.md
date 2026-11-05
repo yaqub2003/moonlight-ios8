@@ -40,7 +40,7 @@
 ### Локально (Linux, например Ubuntu 24.04)
 
 ```bash
-sudo apt-get install clang lld llvm cmake ninja-build make perl python3 zip libssl-dev uuid-dev libxml2-dev zlib1g-dev
+sudo apt-get install clang lld llvm cmake ninja-build make perl python3 zip libssl-dev uuid-dev libxml2-dev zlib1g-dev libplist-dev pkg-config
 ```
 
 ```bash
@@ -55,15 +55,16 @@ ios8/build.sh
 
 ## Установка на устройство
 
-IPA **не подписан** — его нужно подписать при установке:
+IPA подписан фиктивной (ad-hoc) подписью через `ldid`, как это принято для джейлбрейка.
+Bundle ID — `com.moonlight-stream.Moonlight.ios8`, так что приложение ставится рядом
+с Moonlight 2.x из App Store и не заменяет его.
 
+* **С джейлбрейком и AppSync Unified:** откройте IPA в Filza и нажмите Install.
 * **Без джейлбрейка:** через инструмент для sideload с бесплатным Apple ID
   (например, [Sideloadly](https://sideloadly.io/); поддержка старых iOS у разных
-  инструментов разная). Подпись бесплатного аккаунта действует 7 дней.
-  Bundle ID обычно меняется автоматически; можно задать свой при сборке:
+  инструментов разная) — он заменит подпись на настоящую. Подпись бесплатного
+  аккаунта действует 7 дней. Свой Bundle ID можно задать при сборке:
   `BUNDLE_ID=com.example.moonlight ios8/build.sh`.
-* **С джейлбрейком и AppSync Unified:** можно поставить через Filza/AppInstaller,
-  предварительно подписав `ldid -S`.
 
 ## Настройка
 

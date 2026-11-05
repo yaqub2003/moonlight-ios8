@@ -14,7 +14,7 @@
 #
 # Steps (default: all):
 #   sdk        download the iOS 14.5 SDK
-#   toolchain  build ld64 + libtapi from cctools-port / apple-libtapi
+#   toolchain  build ld64 (cctools-port + apple-libtapi) and ldid
 #   deps       build Opus and OpenSSL for each architecture
 #   app        compile and link the Moonlight executable
 #   ipa        assemble Moonlight.app and Moonlight-iOS8.ipa
@@ -24,6 +24,7 @@
 #   BUILD_DIR   work directory          (default: ios8/build)
 #   IOS_SDK     path to an iPhoneOS SDK (default: $BUILD_DIR/sdks/iPhoneOS14.5.sdk)
 #   LD64        path to an ld64 binary  (default: $BUILD_DIR/toolchain/bin/arm-apple-darwin11-ld)
+#   LDID        path to ldid            (default: $BUILD_DIR/toolchain/bin/ldid)
 #   ARCHS       architectures           (default: "armv7 arm64")
 #   BUNDLE_ID   bundle identifier       (default: com.moonlight-stream.Moonlight)
 #   CC          C compiler              (default: clang)
@@ -40,8 +41,10 @@ BUILD_DIR="$(cd "$BUILD_DIR" && pwd)"
 
 IOS_SDK="${IOS_SDK:-$BUILD_DIR/sdks/iPhoneOS14.5.sdk}"
 LD64="${LD64:-$BUILD_DIR/toolchain/bin/arm-apple-darwin11-ld}"
+LDID="${LDID:-$BUILD_DIR/toolchain/bin/ldid}"
 ARCHS="${ARCHS:-armv7 arm64}"
-BUNDLE_ID="${BUNDLE_ID:-com.moonlight-stream.Moonlight}"
+# Different from the App Store app, so it can be installed next to Moonlight 2.x
+BUNDLE_ID="${BUNDLE_ID:-com.moonlight-stream.Moonlight.ios8}"
 CC="${CC:-clang}"
 JOBS="${JOBS:-$(nproc)}"
 MIN_IOS=8.0
@@ -118,7 +121,22 @@ step_sdk() {
 # ---------------------------------------------------------------------------
 # toolchain: ld64 from cctools-port
 # ---------------------------------------------------------------------------
+build_ldid() {
+    if [ -x "$LDID" ]; then
+        log "Using ldid at $LDID"
+        return
+    fi
+    local src="$BUILD_DIR/src/ldid"
+    fetch_git "$LDID_REPO" "$LDID_COMMIT" "$src"
+    log "Building ldid"
+    make -C "$src" -j"$JOBS" VERSION="procursus-${LDID_COMMIT:0:7}"
+    mkdir -p "$(dirname "$LDID")"
+    cp "$src/ldid" "$LDID"
+}
+
 step_toolchain() {
+    # ldid adds the (ad-hoc) code signature that iOS requires even with AppSync
+    build_ldid
     if [ -x "$LD64" ]; then
         log "Using ld64 at $LD64"
         return
@@ -341,6 +359,22 @@ step_ipa() {
     cp "$BUILD_DIR/Moonlight" "$app/Moonlight"
     "$STRIP" -S "$app/Moonlight" 2>/dev/null || true
 
+    # iOS refuses to install an executable without a code signature, even on a
+    # jailbroken device with AppSync. Add an ad-hoc one (like `ldid -S`);
+    # sideloading tools replace it with a real signature anyway.
+    if [ ! -x "$LDID" ]; then
+        echo "error: ldid not found at $LDID (run: ios8/build.sh toolchain)" >&2
+        exit 1
+    fi
+    log "Signing (ad-hoc)"
+    "$LDID" -S "$app/Moonlight"
+    local slices
+    slices=$("$LIPO" -archs "$app/Moonlight" | wc -w)
+    if [ "$("$OTOOL" -l "$app/Moonlight" | grep -c LC_CODE_SIGNATURE)" -ne "$slices" ]; then
+        echo "error: not every architecture of Moonlight is signed" >&2
+        exit 1
+    fi
+
     local version build
     version=$(grep -m1 'MARKETING_VERSION = ' "$ROOT/Moonlight.xcodeproj/project.pbxproj" | sed 's/.*= \(.*\);/\1/')
     build=$(git -C "$ROOT" rev-list --count HEAD 2>/dev/null || echo 1)
@@ -365,6 +399,7 @@ RANLIB="$(find_tool llvm-ranlib)"
 LIPO="$(find_tool llvm-lipo)"
 NM="$(find_tool llvm-nm)"
 STRIP="$(find_tool llvm-strip)"
+OTOOL="$(find_tool llvm-otool)"
 export AR RANLIB
 
 steps=("$@")
