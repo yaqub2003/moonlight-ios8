@@ -35,11 +35,11 @@
 #endif
 
 #import <VideoToolbox/VideoToolbox.h>
+#import <objc/runtime.h>
 
 #include <Limelight.h>
 
 @implementation MainFrameViewController {
-    UICollectionViewFlowLayout* _appGridLayout;
     NSOperationQueue* _opQueue;
     TemporaryHost* _selectedHost;
     BOOL _showHiddenApps;
@@ -78,29 +78,28 @@ static NSMutableSet* hostList;
     }
     layout.sectionInset = UIEdgeInsetsMake(20, 20, 20, 20);
     
-    self = [super initWithCollectionViewLayout:layout];
-    if (self) {
-        _appGridLayout = layout;
-    }
-    return self;
+    return [super initWithCollectionViewLayout:layout];
 }
 
-- (void)loadView {
-    // Use our own reference to the layout: on iOS 8, -[UICollectionViewController
-    // collectionViewLayout] asks the (not yet created) collection view for its
-    // layout and returns nil while the view is being loaded, which makes
-    // UICollectionView throw "must be initialized with a non-nil layout parameter".
-    AppCollectionView* collectionView = [[AppCollectionView alloc] initWithFrame:[UIScreen mainScreen].bounds
-                                                            collectionViewLayout:_appGridLayout];
+// Configure the collection view that UICollectionViewController creates for us.
+// Don't build it ourselves in -loadView: on iOS 8, -collectionViewLayout returns
+// nil while the view is loading, and -setCollectionView: adds the collection view
+// as a subview of self.view ("Can't add self as subview" if they're the same view).
+- (void)setUpCollectionView {
+    UICollectionView* collectionView = self.collectionView;
+    
+    // AppCollectionView only overrides -touchesShouldCancelInContentView: (so the
+    // grid scrolls even when a drag starts on an app button) and adds no ivars,
+    // so it's safe to swap the class of the existing instance.
+    object_setClass(collectionView, [AppCollectionView class]);
+    
+    collectionView.frame = self.view.bounds;
     collectionView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     collectionView.backgroundColor = [UIColor colorWithRed:0.333f green:0.333f blue:0.333f alpha:1.0f];
     collectionView.indicatorStyle = UIScrollViewIndicatorStyleBlack;
     collectionView.dataSource = self;
     collectionView.delegate = self;
     [collectionView registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:@"AppCell"];
-    
-    self.view = collectionView;
-    self.collectionView = collectionView;
 }
 
 - (void)showStreamFrame {
@@ -911,6 +910,8 @@ static NSMutableSet* hostList;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    
+    [self setUpCollectionView];
         
 #if !TARGET_OS_TV
     // These buttons used to come from the storyboard
