@@ -53,8 +53,11 @@ dsym="$BUILD_DIR/dSYM/Moonlight.$arch.dSYM"
 OTOOL="$(find_tool llvm-otool)"
 SYMBOLIZER="$(find_tool llvm-symbolizer)"
 
-uuid=$("$OTOOL" -l "$binary" | awk '/LC_UUID/ { getline; getline; print $2 }')
-text_vmaddr=$("$OTOOL" -l "$binary" | awk '/segname __TEXT$/ { getline; print $2; exit }')
+# Read the load commands first: piping into a reader that exits early makes
+# LLVM tools fail with exit code 74 (write error).
+load_commands=$("$OTOOL" -l "$binary")
+uuid=$(awk '/LC_UUID/ { getline; getline; print $2 }' <<<"$load_commands")
+text_vmaddr=$(awk '/segname __TEXT$/ && !found { getline; print $2; found = 1 }' <<<"$load_commands")
 echo "Build UUID ($arch): $uuid"
 echo "__TEXT vmaddr: $text_vmaddr, image base in report: $base"
 echo
