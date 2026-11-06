@@ -338,6 +338,12 @@ step_app() {
             -o "$BUILD_DIR/obj/$arch/Moonlight"
         slices+=("$BUILD_DIR/obj/$arch/Moonlight")
 
+        # Debug symbols for symbolicating crash reports (ios8/tools/symbolicate.sh)
+        mkdir -p "$BUILD_DIR/dSYM"
+        rm -rf "$BUILD_DIR/dSYM/Moonlight.$arch.dSYM"
+        "$DSYMUTIL" "$BUILD_DIR/obj/$arch/Moonlight" -o "$BUILD_DIR/dSYM/Moonlight.$arch.dSYM" ||
+            echo "warning: dsymutil failed for $arch" >&2
+
         # Make sure dyld on iOS 8 will be able to bind every non-weak import
         python3 -I "$IOS8/tools/check_symbols.py" "$NM" "$BUILD_DIR/sdks/iPhoneOS9.3.sdk" \
             "$BUILD_DIR/obj/$arch/Moonlight"
@@ -400,6 +406,7 @@ LIPO="$(find_tool llvm-lipo)"
 NM="$(find_tool llvm-nm)"
 STRIP="$(find_tool llvm-strip)"
 OTOOL="$(find_tool llvm-otool)"
+DSYMUTIL="$(find_tool dsymutil)"
 export AR RANLIB
 
 steps=("$@")

@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      crash_frames:
+        description: 'Optional: symbolicate a crash report from this exact build. "<arch> <Moonlight image base> <frame address>...", e.g. "armv7 0xbe000 0x00179a0a 0x000c4550"'
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -63,6 +68,13 @@ jobs:
       - name: Build Moonlight
         run: ios8/build.sh app
 
+      - name: Symbolicate crash report
+        if: github.event_name == 'workflow_dispatch' && inputs.crash_frames != ''
+        env:
+          CRASH_FRAMES: ${{ inputs.crash_frames }}
+        # Word splitting of CRASH_FRAMES is intended; the script validates every argument
+        run: ios8/tools/symbolicate.sh $CRASH_FRAMES
+
       - name: Package IPA
         run: ios8/build.sh ipa
 
@@ -72,3 +84,10 @@ jobs:
           name: Moonlight-iOS8
           path: ios8/build/Moonlight-iOS8.ipa
           if-no-files-found: error
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: Moonlight-iOS8-dSYM
+          path: ios8/build/dSYM
+          if-no-files-found: warn
