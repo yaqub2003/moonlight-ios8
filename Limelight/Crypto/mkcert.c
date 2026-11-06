@@ -13,6 +13,7 @@
 #include <openssl/rsa.h>
 #include <openssl/x509.h>
 #include <openssl/rand.h>
+#include <openssl/crypto.h>
 
 static const int NUM_BITS = 2048;
 static const int SERIAL = 0;
@@ -52,6 +53,64 @@ const char* mkcertLastError(void) {
     return lastError;
 }
 
+// OpenSSL internals, only used to describe failures in more detail
+typedef struct ossl_namemap_st OSSL_NAMEMAP;
+OSSL_NAMEMAP *ossl_namemap_stored(OSSL_LIB_CTX *libctx);
+int ossl_namemap_add_name(OSSL_NAMEMAP *namemap, int number, const char *name);
+int ossl_namemap_name2num(const OSSL_NAMEMAP *namemap, const char *name);
+
+static int describeProvider(OSSL_PROVIDER* provider, void* context) {
+    appendError("  provider: %s\n", OSSL_PROVIDER_get0_name(provider));
+    return 1;
+}
+
+static void countKeymgmt(EVP_KEYMGMT* keymgmt, void* context) {
+    (*(int*)context)++;
+}
+
+// Probe the pieces an algorithm fetch depends on, to narrow down failures
+static void appendDiagnostics(void) {
+    appendError("Diagnostics:\n");
+    OSSL_PROVIDER_do_all(NULL, describeProvider, NULL);
+    
+    int keymgmtCount = 0;
+    EVP_KEYMGMT_do_all_provided(NULL, countKeymgmt, &keymgmtCount);
+    appendError("  key managers: %d\n", keymgmtCount);
+    ERR_clear_error();
+    
+    EVP_MD* sha256 = EVP_MD_fetch(NULL, "SHA256", NULL);
+    appendError("  SHA256 fetch: %s\n", sha256 != NULL ? "ok" : "failed");
+    EVP_MD_free(sha256);
+    ERR_clear_error();
+    
+    OSSL_NAMEMAP* namemap = ossl_namemap_stored(NULL);
+    if (namemap == NULL) {
+        appendError("  namemap: NULL\n");
+    }
+    else {
+        appendError("  namemap: RSA=%d SHA256=%d\n",
+                    ossl_namemap_name2num(namemap, "RSA"),
+                    ossl_namemap_name2num(namemap, "SHA256"));
+        int added = ossl_namemap_add_name(namemap, 0, "MOONLIGHT-NAMEMAP-TEST");
+        appendError("  namemap test: add=%d lookup=%d\n", added,
+                    ossl_namemap_name2num(namemap, "MOONLIGHT-NAMEMAP-TEST"));
+    }
+    
+    CRYPTO_RWLOCK* lock = CRYPTO_THREAD_lock_new();
+    uint64_t value __attribute__((aligned(8))) = 0, result = 0;
+    int stored = CRYPTO_atomic_store(&value, 0x0123456789abcdefULL, lock);
+    int loaded = CRYPTO_atomic_load(&value, &result, lock);
+    appendError("  64-bit atomics: store=%d load=%d match=%d\n", stored, loaded,
+                result == 0x0123456789abcdefULL);
+    CRYPTO_THREAD_lock_free(lock);
+    
+#if defined(__arm__)
+    appendError("  arch: armv7\n");
+#elif defined(__aarch64__) || defined(__arm64__)
+    appendError("  arch: arm64\n");
+#endif
+}
+
 static EVP_PKEY* generateRsaKey(int bits) {
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
     if (ctx == NULL) {
@@ -66,6 +125,7 @@ static EVP_PKEY* generateRsaKey(int bits) {
         ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
         if (ctx == NULL) {
             recordFailure("EVP_PKEY_CTX_new_id(EVP_PKEY_RSA) after loading the default provider");
+            appendDiagnostics();
             return NULL;
         }
         appendError("Retry after loading the default provider succeeded\n");

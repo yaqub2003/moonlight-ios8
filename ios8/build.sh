@@ -212,10 +212,20 @@ build_openssl() {
     mkdir -p "$(dirname "$src")"
     cp -a "$BUILD_DIR/src/openssl" "$src"
 
-    local target asm
+    local target asm extra_cflags=""
     case "$arch" in
         arm64) target=ios64-cross; asm="" ;;          # ARMv8 crypto extensions
-        armv7) target=ios-cross;   asm="no-asm" ;;    # no AES acceleration anyway
+        armv7)
+            target=ios-cross
+            asm="no-asm"    # no AES acceleration anyway
+            # clang can't inline 64-bit atomics for armv7 on iOS, so OpenSSL's
+            # lock-free paths end up calling __atomic_* helpers (libcompiler_rt in
+            # the OS, plus our __atomic_is_lock_free shim). On an iPad 3 with iOS
+            # 8.4.1 that broke OpenSSL's name map (every algorithm fetch failed
+            # with "unsupported"). Use OpenSSL's own pthread-mutex fallbacks for
+            # all atomic operations on armv7 instead.
+            extra_cflags="-DBROKEN_CLANG_ATOMICS -DUSE_ATOMIC_FALLBACKS"
+            ;;
     esac
 
     # The ios*-cross targets look for the SDK in $CROSS_TOP/SDKs/$CROSS_SDK
@@ -230,7 +240,7 @@ build_openssl() {
             no-quic no-comp no-ssl3 no-weak-ssl-ciphers \
             --prefix="$out" --libdir=lib \
             CC="$CC -target $(triple "$arch")" AR="$AR" RANLIB="$RANLIB" \
-            CFLAGS="-Os -mios-version-min=$MIN_IOS -Wunguarded-availability" &&
+            CFLAGS="-Os -mios-version-min=$MIN_IOS -Wunguarded-availability $extra_cflags" &&
         CROSS_TOP="$cross_top" CROSS_SDK="$(basename "$IOS_SDK")" make -j"$JOBS" build_libs > build.log 2>&1 ||
             { tail -50 build.log; exit 1; }
         # Anything newer than iOS 8 that OpenSSL calls would crash the app at launch
