@@ -283,12 +283,29 @@ static NSData* p12 = nil;
     return data;
 }
 
+static NSString* certificateGenerationError;
+
++ (NSString*) certificateGenerationError {
+    return certificateGenerationError;
+}
+
 + (void) generateKeyPairUsingSSL {
     static dispatch_once_t pred;
     dispatch_once(&pred, ^{
         if (![CryptoManager keyPairExists]) {
             Log(LOG_I, @"Generating Certificate... ");
             CertKeyPair certKeyPair = generateCertKeyPair();
+            if (certKeyPair.x509 == NULL || certKeyPair.pkey == NULL || certKeyPair.p12 == NULL) {
+                // Don't crash: report the failure (it can't pair, but the UI still works)
+                certificateGenerationError = [NSString stringWithUTF8String:mkcertLastError()];
+                Log(LOG_E, @"Certificate generation failed:\n%@", certificateGenerationError);
+                NSString* documents = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+                [certificateGenerationError writeToFile:[documents stringByAppendingPathComponent:@"OpenSSLError.txt"]
+                                             atomically:YES
+                                               encoding:NSUTF8StringEncoding
+                                                  error:nil];
+                return;
+            }
             
             NSData* certData = [CryptoManager getCertFromCertKeyPair:&certKeyPair];
             NSData* p12Data = [CryptoManager getP12FromCertKeyPair:&certKeyPair];

@@ -18,7 +18,10 @@ typedef struct CertKeyPair {
     PKCS12 *p12;
 } CertKeyPair;
 
+// Returns a pair with NULL members on failure; see mkcertLastError()
 struct CertKeyPair generateCertKeyPair(void);
+// Description of the last failure in generateCertKeyPair(), including OpenSSL's error queue
+const char* mkcertLastError(void);
 void freeCertKeyPair(CertKeyPair);
 #endif
 

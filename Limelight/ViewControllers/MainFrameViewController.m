@@ -1095,6 +1095,18 @@ static NSMutableSet* hostList;
 {
     [super viewDidAppear:animated];
     
+    // Tell the user (once) if the client certificate couldn't be created,
+    // since pairing can't work without it.
+    static BOOL certificateErrorShown;
+    if (!certificateErrorShown && [CryptoManager certificateGenerationError] != nil) {
+        certificateErrorShown = YES;
+        UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"Certificate Generation Failed"
+                                                                       message:[NSString stringWithFormat:@"Moonlight couldn't create its client certificate, so pairing won't work. The details were saved to Documents/OpenSSLError.txt:\n\n%@", [CryptoManager certificateGenerationError]]
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [[self activeViewController] presentViewController:alert animated:YES completion:nil];
+    }
+    
 #if !TARGET_OS_TV
     [[self revealViewController] setPrimaryViewController:self];
 #endif

@@ -24,4 +24,7 @@
 - (bool) verifySignature:(NSData *)data withSignature:(NSData*)signature andCert:(NSData*)cert;
 - (NSData*) signData:(NSData*)data withKey:(NSData*)key;
 
+// Non-nil if generateKeyPairUsingSSL failed
++ (NSString*) certificateGenerationError;
+
 @end
