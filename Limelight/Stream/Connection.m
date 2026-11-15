@@ -15,7 +15,7 @@
 #import <AVFoundation/AVFoundation.h>
 
 #include "Limelight.h"
-#include "opus_multistream.h"
+#import "AudioOutput.h"
 
 @implementation Connection {
     SERVER_INFORMATION _serverInfo;
@@ -30,25 +30,12 @@
 }
 
 static NSLock* initLock;
-static OpusMSDecoder* opusDecoder;
 static id<ConnectionCallbacks> _callbacks;
 static int lastFrameNumber;
 static int activeVideoFormat;
 static video_stats_t currentVideoStats;
 static video_stats_t lastVideoStats;
 static NSLock* videoStatsLock;
-
-// Audio output uses an AudioQueue directly. Upstream Moonlight uses SDL2
-// for this, but SDL2 no longer supports iOS 8 or 32-bit ARM.
-#define AUDIO_QUEUE_BUFFERS 10
-static AudioQueueRef audioQueue;
-static AudioQueueBufferRef audioQueueBuffers[AUDIO_QUEUE_BUFFERS];
-static AudioQueueBufferRef freeAudioBuffers[AUDIO_QUEUE_BUFFERS];
-static int freeAudioBufferCount;
-static NSLock* audioBufferLock;
-static dispatch_semaphore_t audioBufferSemaphore;
-static OPUS_MULTISTREAM_CONFIGURATION audioConfig;
-static int audioFrameSize;
 
 static VideoDecoderRenderer* renderer;
 
@@ -214,144 +201,21 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit)
                              decodeUnit:decodeUnit];
 }
 
-static void AudioQueueBufferDone(void* userData, AudioQueueRef queue, AudioQueueBufferRef buffer)
-{
-    // The buffer has been played, so return it to the free list
-    [audioBufferLock lock];
-    freeAudioBuffers[freeAudioBufferCount++] = buffer;
-    [audioBufferLock unlock];
-    dispatch_semaphore_signal(audioBufferSemaphore);
-}
-
+// Audio output lives in AudioOutput.m (upstream uses SDL2, which doesn't
+// support iOS 8 or 32-bit ARM)
 int ArInit(int audioConfiguration, POPUS_MULTISTREAM_CONFIGURATION opusConfig, void* context, int flags)
 {
-    int err;
-    OSStatus status;
-    AudioStreamBasicDescription format;
-    
-    // Configure the audio session like Moonlight 2.x did on iOS 8: match the
-    // stream's sample rate and ask for a small I/O buffer to keep latency low.
-    // MixWithOthers keeps other audio from being lowered (upstream behavior).
-    AVAudioSession* audioSession = [AVAudioSession sharedInstance];
-    [audioSession setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionMixWithOthers error:nil];
-    [audioSession setPreferredSampleRate:opusConfig->sampleRate error:nil];
-    [audioSession setPreferredIOBufferDuration:0.005 error:nil];
-    [audioSession setActive:YES error:nil];
-    
-    audioConfig = *opusConfig;
-    audioFrameSize = opusConfig->samplesPerFrame * sizeof(short) * opusConfig->channelCount;
-    
-    opusDecoder = opus_multistream_decoder_create(opusConfig->sampleRate,
-                                                  opusConfig->channelCount,
-                                                  opusConfig->streams,
-                                                  opusConfig->coupledStreams,
-                                                  opusConfig->mapping,
-                                                  &err);
-    if (opusDecoder == NULL) {
-        Log(LOG_E, @"Failed to create Opus decoder");
-        ArCleanup();
-        return -1;
-    }
-    
-    memset(&format, 0, sizeof(format));
-    format.mSampleRate = opusConfig->sampleRate;
-    format.mFormatID = kAudioFormatLinearPCM;
-    format.mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked;
-    format.mChannelsPerFrame = opusConfig->channelCount;
-    format.mBitsPerChannel = 16;
-    format.mBytesPerFrame = sizeof(short) * opusConfig->channelCount;
-    format.mFramesPerPacket = 1;
-    format.mBytesPerPacket = format.mBytesPerFrame;
-    
-    // A NULL run loop makes the AudioQueue invoke the callback on its own thread
-    status = AudioQueueNewOutput(&format, AudioQueueBufferDone, NULL, NULL, NULL, 0, &audioQueue);
-    if (status != noErr) {
-        Log(LOG_E, @"AudioQueueNewOutput() failed: %d", (int)status);
-        audioQueue = NULL;
-        ArCleanup();
-        return -1;
-    }
-    
-    audioBufferLock = [[NSLock alloc] init];
-    audioBufferSemaphore = dispatch_semaphore_create(0);
-    freeAudioBufferCount = 0;
-    for (int i = 0; i < AUDIO_QUEUE_BUFFERS; i++) {
-        status = AudioQueueAllocateBuffer(audioQueue, audioFrameSize, &audioQueueBuffers[i]);
-        if (status != noErr) {
-            Log(LOG_E, @"AudioQueueAllocateBuffer() failed: %d", (int)status);
-            ArCleanup();
-            return -1;
-        }
-        freeAudioBuffers[freeAudioBufferCount++] = audioQueueBuffers[i];
-        dispatch_semaphore_signal(audioBufferSemaphore);
-    }
-    
-    status = AudioQueueStart(audioQueue, NULL);
-    if (status != noErr) {
-        Log(LOG_E, @"AudioQueueStart() failed: %d", (int)status);
-        ArCleanup();
-        return -1;
-    }
-    
-    return 0;
+    return AudioOutputInit(opusConfig);
 }
 
 void ArCleanup(void)
 {
-    if (audioQueue != NULL) {
-        // Stopping synchronously also disposes of the buffers
-        AudioQueueStop(audioQueue, true);
-        AudioQueueDispose(audioQueue, true);
-        audioQueue = NULL;
-    }
-    memset(audioQueueBuffers, 0, sizeof(audioQueueBuffers));
-    freeAudioBufferCount = 0;
-    audioBufferSemaphore = nil;
-    audioBufferLock = nil;
-    
-    if (opusDecoder != NULL) {
-        opus_multistream_decoder_destroy(opusDecoder);
-        opusDecoder = NULL;
-    }
+    AudioOutputCleanup();
 }
 
 void ArDecodeAndPlaySample(char* sampleData, int sampleLength)
 {
-    int decodeLen;
-    AudioQueueBufferRef buffer;
-    
-    // Don't queue if there's already more than 30 ms of audio data waiting
-    // in Moonlight's audio queue.
-    if (LiGetPendingAudioDuration() > 30) {
-        return;
-    }
-    
-    // Provide backpressure: wait (briefly) until the AudioQueue hands a buffer back.
-    // If it doesn't within 100 ms, the audio device is stuck so drop the sample.
-    if (dispatch_semaphore_wait(audioBufferSemaphore, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) != 0) {
-        return;
-    }
-    
-    [audioBufferLock lock];
-    buffer = freeAudioBuffers[--freeAudioBufferCount];
-    [audioBufferLock unlock];
-    
-    decodeLen = opus_multistream_decode(opusDecoder, (unsigned char *)sampleData, sampleLength,
-                                        (short*)buffer->mAudioData, audioConfig.samplesPerFrame, 0);
-    if (decodeLen > 0) {
-        buffer->mAudioDataByteSize = (UInt32)(sizeof(short) * decodeLen * audioConfig.channelCount);
-        OSStatus status = AudioQueueEnqueueBuffer(audioQueue, buffer, 0, NULL);
-        if (status == noErr) {
-            return;
-        }
-        Log(LOG_E, @"AudioQueueEnqueueBuffer() failed: %d", (int)status);
-    }
-    
-    // Not submitted, so return the buffer to the free list
-    [audioBufferLock lock];
-    freeAudioBuffers[freeAudioBufferCount++] = buffer;
-    [audioBufferLock unlock];
-    dispatch_semaphore_signal(audioBufferSemaphore);
+    AudioOutputDecodeAndPlaySample(sampleData, sampleLength);
 }
 
 void ClStageStarting(int stage)

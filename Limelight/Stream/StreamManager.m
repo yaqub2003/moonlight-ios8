@@ -7,6 +7,7 @@
 //
 
 #import "StreamManager.h"
+#import "AudioOutput.h"
 #import "CryptoManager.h"
 #import "HttpManager.h"
 #import "Utils.h"
@@ -178,15 +179,19 @@
         hostProcessingString = @"";
     }
     
+    NSString* audioString = AudioOutputGetStatsText();
+    audioString = audioString != nil ? [@"\n" stringByAppendingString:audioString] : @"";
+    
     float interval = stats.endTime - stats.startTime;
-    return [NSString stringWithFormat:@"Video stream: %dx%d %.2f FPS (Codec: %@)\nFrames dropped by your network connection: %.2f%%\nAverage network latency: %@%@",
+    return [NSString stringWithFormat:@"Video stream: %dx%d %.2f FPS (Codec: %@)\nFrames dropped by your network connection: %.2f%%\nAverage network latency: %@%@%@",
             _config.width,
             _config.height,
             stats.totalFrames / interval,
             [_connection getActiveCodecName],
             stats.networkDroppedFrames / interval,
             latencyString,
-            hostProcessingString];
+            hostProcessingString,
+            audioString];
 }
 
 @end
