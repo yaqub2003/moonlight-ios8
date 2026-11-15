@@ -14,7 +14,8 @@
 //    audio if there is some, or with silence otherwise. The queue never runs
 //    dry, so a network hiccup can't leave it stalled.
 //
-//  On top of that, it caps how much audio can pile up (to keep latency low),
+//  On top of that, it keeps a small jitter buffer (bursty Wi-Fi delivery),
+//  caps how much audio can pile up (to keep latency low),
 //  restarts the queue after audio session interruptions or unexpected stops,
 //  and records statistics and events in Documents/AudioLog.txt.
 //
@@ -27,14 +28,27 @@
 
 #include "opus_multistream.h"
 
+#include <pthread.h>
+#include <sys/qos.h>
+
 // Number of decoded packets the ring buffer can hold
 #define RING_PACKETS 32
 
 // Number of AudioQueue buffers; each holds one packet
 #define QUEUE_BUFFERS 4
 
-// Audio waiting in the ring buffer beyond this is dropped to keep latency low
-#define MAX_BUFFERED_MS 40
+// Jitter buffer. On an iPad 3 over Wi-Fi, audio packets arrive in bursts
+// (logs showed alternating gaps and pile-ups with a 40 ms cap), so:
+// - playback (re)starts only once TARGET_BUFFERED_MS of audio is queued,
+//   so one late burst costs one short gap instead of many 5 ms gaps
+// - audio beyond MAX_BUFFERED_MS is dropped, back down to the target,
+//   so latency can't build up
+#define TARGET_BUFFERED_MS 30
+#define MAX_BUFFERED_MS 100
+
+// Packets waiting in moonlight-common-c beyond this are dropped
+// (upstream uses 30 ms, but here the jitter buffer absorbs bursts)
+#define MAX_PENDING_MS 100
 
 #define MAX_EVENTS 200
 
@@ -47,6 +61,8 @@ static int channelCount;
 static int packetFrames;        // maximum frames per packet
 static int bytesPerFrame;
 static int maxBufferedPackets;
+static int targetBufferedPackets;
+static int rebuffering;     // AudioQueue thread only: waiting to reach the target
 
 // Single-producer/single-consumer ring of decoded packets
 static short* ringSamples;
@@ -55,6 +71,7 @@ static int ringRead;    // advanced by the AudioQueue thread only
 static int ringWrite;   // advanced by the decoder thread only
 
 static int stopping;
+static int raisedThreadPriority;
 
 static struct {
     unsigned received;          // packets passed to us
@@ -65,6 +82,7 @@ static struct {
     unsigned trimmed;           // dropped to cap latency
     unsigned played;            // buffers filled with audio
     unsigned underruns;         // buffers filled with silence (no audio ready)
+    unsigned gaps;              // times playback ran out of audio and had to rebuffer
     unsigned enqueueErrors;
     unsigned interruptions;
     unsigned unexpectedStops;
@@ -119,13 +137,13 @@ static void WriteLog(NSString* reason)
     NSMutableString* log = [NSMutableString string];
     [log appendFormat:@"Moonlight audio log (%@), %@\n", reason, [NSDate date]];
     [log appendFormat:@"iOS %@, %@\n", [UIDevice currentDevice].systemVersion, [UIDevice currentDevice].model];
-    [log appendFormat:@"stream: %d Hz, %d channels, %d frames (%.1f ms) per packet, max buffered %d packets\n",
-     sampleRate, channelCount, packetFrames, packetFrames * 1000.0 / MAX(sampleRate, 1), maxBufferedPackets];
+    [log appendFormat:@"stream: %d Hz, %d channels, %d frames (%.1f ms) per packet, buffer target %d / max %d packets\n",
+     sampleRate, channelCount, packetFrames, packetFrames * 1000.0 / MAX(sampleRate, 1), targetBufferedPackets, maxBufferedPackets];
     [log appendFormat:@"%@\n\n", DescribeAudioSession()];
     [log appendFormat:@"packets received: %u, decoded: %u, decode errors: %u\n", stats.received, stats.decoded, stats.decodeErrors];
     [log appendFormat:@"dropped (common-c backed up): %u, dropped (ring full): %u, trimmed (latency cap): %u\n",
      stats.droppedPending, stats.droppedFull, stats.trimmed];
-    [log appendFormat:@"buffers played: %u, silence (underruns): %u, enqueue errors: %u\n", stats.played, stats.underruns, stats.enqueueErrors];
+    [log appendFormat:@"buffers played: %u, silence (underruns): %u, gaps: %u, enqueue errors: %u\n", stats.played, stats.underruns, stats.gaps, stats.enqueueErrors];
     [log appendFormat:@"interruptions: %u, unexpected stops: %u, restarts: %u\n\n", stats.interruptions, stats.unexpectedStops, stats.restarts];
     [log appendString:@"Events:\n"];
     @synchronized (stateLock) {
@@ -161,15 +179,26 @@ static void FillBuffer(void* userData, AudioQueueRef queue, AudioQueueBufferRef 
     int write = __atomic_load_n(&ringWrite, __ATOMIC_ACQUIRE);
     int available = AvailablePackets(read, write);
 
-    // If too much audio has piled up (e.g. after the queue was paused),
-    // skip the oldest packets so we don't play it back with extra delay.
+    // If too much audio has piled up (e.g. a burst after a network stall),
+    // skip the oldest packets, back down to the target, so we don't keep
+    // playing with extra delay.
     if (available > maxBufferedPackets) {
-        stats.trimmed += available - maxBufferedPackets;
-        read = (read + available - maxBufferedPackets) % RING_PACKETS;
-        available = maxBufferedPackets;
+        stats.trimmed += available - targetBufferedPackets;
+        read = (read + available - targetBufferedPackets) % RING_PACKETS;
+        available = targetBufferedPackets;
     }
 
-    if (available > 0) {
+    // After running dry (and at startup), wait until the buffer has refilled
+    // to the target before playing again
+    if (rebuffering && available >= targetBufferedPackets) {
+        rebuffering = 0;
+    }
+    else if (!rebuffering && available == 0) {
+        rebuffering = 1;
+        stats.gaps++;
+    }
+
+    if (!rebuffering && available > 0) {
         UInt32 size = (UInt32)(ringFrames[read] * bytesPerFrame);
         memcpy(buffer->mAudioData, ringSamples + (size_t)read * packetFrames * channelCount, size);
         buffer->mAudioDataByteSize = size;
@@ -252,8 +281,12 @@ int AudioOutputInit(POPUS_MULTISTREAM_CONFIGURATION opusConfig)
     packetFrames = opusConfig->samplesPerFrame;
     bytesPerFrame = (int)sizeof(short) * channelCount;
     double packetMs = packetFrames * 1000.0 / sampleRate;
-    maxBufferedPackets = MAX(2, (int)(MAX_BUFFERED_MS / packetMs));
+    targetBufferedPackets = MAX(1, (int)(TARGET_BUFFERED_MS / packetMs));
+    maxBufferedPackets = MAX(targetBufferedPackets + 1, (int)(MAX_BUFFERED_MS / packetMs));
     maxBufferedPackets = MIN(maxBufferedPackets, RING_PACKETS - 1);
+    targetBufferedPackets = MIN(targetBufferedPackets, maxBufferedPackets - 1);
+    rebuffering = 1;
+    raisedThreadPriority = 0;
 
     // Configure the audio session like Moonlight 2.x did on iOS 8: match the
     // stream's sample rate and ask for a small I/O buffer to keep latency low.
@@ -406,10 +439,17 @@ void AudioOutputCleanup(void)
 void AudioOutputDecodeAndPlaySample(char* sampleData, int sampleLength)
 {
     stats.received++;
+    
+    // The iPad 3 is busy decoding video and running the UI; make sure the
+    // thread feeding audio doesn't wait behind that for CPU time.
+    if (!raisedThreadPriority) {
+        raisedThreadPriority = 1;
+        int err = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+        RecordEvent(@"raised audio thread priority: %d", err);
+    }
 
-    // Don't queue if there's already more than 30 ms of audio data waiting
-    // in Moonlight's audio queue (same as upstream).
-    if (LiGetPendingAudioDuration() > 30) {
+    // Don't queue if Moonlight's own audio queue is far behind
+    if (LiGetPendingAudioDuration() > MAX_PENDING_MS) {
         stats.droppedPending++;
         return;
     }
@@ -445,8 +485,9 @@ NSString* AudioOutputGetStatsText(void)
 
     int buffered = AvailablePackets(__atomic_load_n(&ringRead, __ATOMIC_RELAXED),
                                     __atomic_load_n(&ringWrite, __ATOMIC_RELAXED));
-    return [NSString stringWithFormat:@"Audio: %d ms buffered, %u silence fills, %u dropped, %u restarts",
+    return [NSString stringWithFormat:@"Audio: %d ms buffered, %u gaps (%u silence fills), %u dropped, %u restarts",
             (int)(buffered * packetFrames * 1000 / MAX(sampleRate, 1)),
+            stats.gaps,
             stats.underruns,
             stats.droppedPending + stats.droppedFull + stats.trimmed,
             stats.restarts];
